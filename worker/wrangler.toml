@@ -1,0 +1,12 @@
+name = "hypertrophy-coach-proxy"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+[vars]
+MODEL = "claude-sonnet-4-6"
+ALLOWED_ORIGIN = "https://mgrayson638-ux.github.io"
+
+# TODO: Uncomment to enable per-IP rate limiting via Workers KV:
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "your-kv-namespace-id-here"

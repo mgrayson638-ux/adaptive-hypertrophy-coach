@@ -1,0 +1,2 @@
+# Copy this to .dev.vars (git-ignored) for local wrangler dev
+ANTHROPIC_API_KEY=sk-ant-your-key-here
