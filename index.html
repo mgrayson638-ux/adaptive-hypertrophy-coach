@@ -1037,7 +1037,7 @@
         }
 
         function updateStats() {
-            weekNumberEl.textContent = appState.weekNumber;
+            weekNumberEl.textContent = (appState.currentWorkout && appState.currentWorkout.weekNumber) || appState.weekNumber;
             loggedSessionsEl.textContent = appState.workoutLogs.length;
             
             const totalVol = appState.workoutLogs.reduce((sum, log) => {
@@ -1379,7 +1379,13 @@
                 intensityTechnique: document.getElementById('intensity-technique').value
             };
 
-            const workoutName = document.getElementById('workout-name').value || `Week ${appState.weekNumber} - ${new Date().toLocaleDateString()}`;
+            // The next workout is one week past the current workout. On a
+            // blank slate (no current workout) the first workout is Week 1.
+            const targetWeek = appState.currentWorkout && appState.currentWorkout.weekNumber
+                ? appState.currentWorkout.weekNumber + 1
+                : 1;
+
+            const workoutName = document.getElementById('workout-name').value || `Week ${targetWeek} - ${new Date().toLocaleDateString()}`;
 
             let newWorkout;
 
@@ -1400,7 +1406,7 @@
                 }
 
                 const payload = {
-                    weekNumber: appState.weekNumber,
+                    weekNumber: targetWeek,
                     settings,
                     exerciseDatabase: ExerciseDatabase,
                     recentLogs,
@@ -1436,11 +1442,15 @@
                 }
             }
 
+            // Stamp the workout with its week so the dashboard counter and
+            // future generations always have an accurate reference point.
+            newWorkout.weekNumber = targetWeek;
+
             appState.savedWorkouts.push(newWorkout);
             appState.currentWorkoutId = newWorkout.id;
             appState.currentWorkout = newWorkout;
             appState.settings = settings;
-            appState.weekNumber++;
+            appState.weekNumber = targetWeek;
 
             multiDayWorkoutData = newWorkout.workout;
             currentWorkoutNameEl.textContent = newWorkout.name;
@@ -1474,6 +1484,25 @@
             if (!ok) return;
             localStorage.removeItem('hypertrophyCoachState_v2');
             location.reload();
+        }
+
+        // Renders the dashboard's blank-slate view before any workout exists.
+        function showEmptyState() {
+            currentWorkoutNameEl.textContent = 'No workout yet';
+            workoutDayTitleEl.textContent = '';
+            document.getElementById('workout-day-details').textContent = '';
+            dayNavigationContainer.innerHTML = '';
+            progressionNotesSection.classList.add('hidden');
+            workoutContainer.innerHTML =
+                '<div class="card card-static p-8 text-center">' +
+                    '<h3 class="text-lg font-bold text-white mb-2">Ready to start</h3>' +
+                    '<p class="text-neutral-400 text-sm mb-5">You\'re on a blank slate. Generate your first workout and the coach will build Week 1 around your goals.</p>' +
+                    '<button id="empty-generate-btn" class="btn-primary text-white font-semibold py-2.5 px-5 rounded-lg text-sm">Generate Week 1</button>' +
+                '</div>';
+            document.getElementById('empty-generate-btn').addEventListener('click', () => {
+                settingsModal.classList.remove('hidden');
+                document.body.style.overflow = 'hidden';
+            });
         }
 
         // ============================================
@@ -1531,22 +1560,10 @@
                 loadWorkout(appState.savedWorkouts[appState.savedWorkouts.length - 1].id);
                 updateStats();
             } else {
-                // Generate initial workout
-                const initialWorkout = generateWeeklyWorkout('Week 1 - Getting Started', appState.settings);
-                appState.savedWorkouts.push(initialWorkout);
-                appState.currentWorkoutId = initialWorkout.id;
-                appState.currentWorkout = initialWorkout;
-                appState.weekNumber++;
-                
-                multiDayWorkoutData = initialWorkout.workout;
-                currentWorkoutNameEl.textContent = initialWorkout.name;
-                progressionTextEl.textContent = initialWorkout.progressionNotes;
-                progressionNotesSection.classList.remove('hidden');
-                
-                createDayNavigation();
-                renderDay(0);
+                // Blank slate — no workouts yet. Show an empty state that
+                // invites the user to generate their first workout (Week 1).
+                showEmptyState();
                 updateStats();
-                saveState();
             }
         });
     </script>
