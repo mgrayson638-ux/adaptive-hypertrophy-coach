@@ -404,20 +404,8 @@
             
             <!-- Current Workout Info -->
             <div id="current-workout-info" class="card card-static p-4 mb-4">
-                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                    <div>
-                        <p class="text-xs text-neutral-500 uppercase tracking-wider">Current Workout</p>
-                        <h2 id="current-workout-name" class="text-lg font-bold text-white">Week 1 - Hypertrophy Base</h2>
-                    </div>
-                    <div class="flex gap-2">
-                        <button id="log-workout-btn" class="btn-success text-white font-semibold py-2 px-4 rounded-lg text-sm flex items-center gap-1.5">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            Log Session
-                        </button>
-                    </div>
-                </div>
+                <p class="text-xs text-neutral-500 uppercase tracking-wider">Current Workout</p>
+                <h2 id="current-workout-name" class="text-lg font-bold text-white">Week 1 - Hypertrophy Base</h2>
             </div>
             
             <!-- Stats Grid -->
@@ -456,7 +444,13 @@
         <main id="workout-container" class="space-y-4 fade-in">
             <!-- Exercise cards rendered here -->
         </main>
-        
+
+        <!-- Inline Session Notes (only shown when a workout is loaded) -->
+        <section id="inline-notes-section" class="mt-4 card card-static p-4 hidden">
+            <label for="inline-session-notes" class="block text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">Session Notes</label>
+            <textarea id="inline-session-notes" rows="2" placeholder="How did you feel? Any adjustments made?" class="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-teal-500 resize-none"></textarea>
+        </section>
+
         <!-- Progression Notes -->
         <section id="progression-notes" class="mt-8 card card-static p-5 hidden">
             <h3 class="text-base font-bold text-teal-400 mb-2 flex items-center gap-2">
@@ -610,6 +604,124 @@
 
         function generateId() {
             return Date.now().toString(36) + Math.random().toString(36).substr(2);
+        }
+
+        // ============================================
+        // LOGGING HELPERS
+        // ============================================
+        // Returns a YYYY-MM-DD key from a Date in local time so multiple
+        // logs on the same calendar day collapse to one.
+        function todayDateKey(date) {
+            const d = date || new Date();
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+
+        // Read-only lookup for today's log for a given workout + day. Returns
+        // null if none exists yet. Used during render; we don't want to
+        // create empty draft logs just because the user browsed a day tab.
+        function getTodaysLog(workoutId, dayName) {
+            const today = todayDateKey();
+            return appState.workoutLogs.find(l =>
+                l.workoutId === workoutId &&
+                l.day === dayName &&
+                todayDateKey(new Date(l.date)) === today
+            ) || null;
+        }
+
+        // Get-or-create the today's log. Called from the first inline input
+        // interaction so logs only materialize when the user actually engages.
+        function getOrCreateTodaysLog(workoutId, dayName, dayTitle) {
+            let log = getTodaysLog(workoutId, dayName);
+            if (!log) {
+                const workout = appState.savedWorkouts.find(w => w.id === workoutId);
+                log = {
+                    id: generateId(),
+                    workoutId: workoutId,
+                    workoutName: workout ? workout.name : 'Unknown',
+                    day: dayName,
+                    dayTitle: dayTitle,
+                    date: new Date().toISOString(),
+                    exercises: [],
+                    notes: ''
+                };
+                appState.workoutLogs.push(log);
+            }
+            return log;
+        }
+
+        // Get-or-create an exercise entry inside a log, padded to targetSets.
+        function getOrCreateLogExercise(log, exerciseName, targetSets) {
+            let ex = log.exercises.find(e => e.name === exerciseName);
+            if (!ex) {
+                ex = { name: exerciseName, sets: [] };
+                log.exercises.push(ex);
+            }
+            while (ex.sets.length < targetSets) {
+                ex.sets.push({});
+            }
+            return ex;
+        }
+
+        // Returns the sets array of the most recent prior log containing
+        // this exercise (with any real data). Used for ghost placeholders.
+        function getLastSessionForExercise(name, excludeLogId) {
+            for (let i = appState.workoutLogs.length - 1; i >= 0; i--) {
+                const log = appState.workoutLogs[i];
+                if (excludeLogId && log.id === excludeLogId) continue;
+                const ex = log.exercises.find(e => e.name === name);
+                if (ex && ex.sets.some(s => (s.weight || 0) > 0)) {
+                    return ex.sets;
+                }
+            }
+            return null;
+        }
+
+        // Recompute exerciseProgress entries for a single log's exercises.
+        // Replaces any prior entry tied to this log's date so edits stay
+        // consistent with the source of truth.
+        function updateExerciseProgressForLog(log) {
+            log.exercises.forEach(ex => {
+                if (!appState.exerciseProgress[ex.name]) {
+                    appState.exerciseProgress[ex.name] = [];
+                }
+                const maxWeight = Math.max(0, ...ex.sets.map(s => s.weight || 0));
+                const maxReps = Math.max(0, ...ex.sets.map(s => s.reps || 0));
+                appState.exerciseProgress[ex.name] =
+                    appState.exerciseProgress[ex.name].filter(p => p.date !== log.date);
+                if (maxWeight > 0) {
+                    appState.exerciseProgress[ex.name].push({
+                        date: log.date,
+                        weight: maxWeight,
+                        reps: maxReps
+                    });
+                }
+            });
+        }
+
+        // A "logged" session is one where at least one set is marked done or
+        // has actual weight recorded. Empty draft logs don't count.
+        function isLoggedSession(log) {
+            return log.exercises.some(ex =>
+                ex.sets.some(s => s.completed || (s.weight || 0) > 0)
+            );
+        }
+
+        // Walks the day's exercise definitions (including supersets) to find
+        // an exercise by name. Used by the inline log handlers to discover
+        // the prescribed set count.
+        function findExerciseDef(dayData, name) {
+            for (const item of dayData.exercises) {
+                if (item.type === 'superset') {
+                    const found = item.exercises.find(e => e.name === name);
+                    if (found) return found;
+                } else if (item.name === name) {
+                    return item;
+                }
+            }
+            return null;
         }
 
         // ============================================
@@ -848,30 +960,63 @@
         function createExerciseCard(exercise, exerciseIndex, dayIndex, isSupersetChild = false, supersetIndex = null) {
             const card = document.createElement('div');
             card.className = `card card-static p-4 sm:p-5 fade-in ${isSupersetChild ? 'mb-3 last:mb-0 bg-neutral-900/50' : ''}`;
-            
-            let setsCheckboxes = '';
-            for (let i = 1; i <= exercise.sets; i++) {
-                const checkboxId = `day${dayIndex}_ex${exerciseIndex}${supersetIndex !== null ? `_ss${supersetIndex}` : ''}_set${i}`;
-                setsCheckboxes += `
-                    <div class="flex items-center">
-                        <input type="checkbox" id="${checkboxId}" class="h-4 w-4 rounded bg-neutral-700 border-neutral-600 focus:ring-teal-500">
-                        <label for="${checkboxId}" class="ml-1.5 text-neutral-400 text-sm">Set ${i}</label>
+
+            // Read-only lookups during render. We don't materialize a log just
+            // because the user navigated to a day; that happens on first input.
+            const dayData = multiDayWorkoutData[dayIndex];
+            const todayLog = (appState.currentWorkoutId && dayData)
+                ? getTodaysLog(appState.currentWorkoutId, dayData.dayName)
+                : null;
+            const logEx = todayLog
+                ? todayLog.exercises.find(e => e.name === exercise.name)
+                : null;
+            const lastSets = getLastSessionForExercise(exercise.name, todayLog ? todayLog.id : null);
+
+            const safeName = exercise.name.replace(/"/g, '&quot;');
+            const checkSvg = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>';
+
+            let setsHTML = '';
+            for (let i = 0; i < exercise.sets; i++) {
+                const setData = (logEx && logEx.sets[i]) ? logEx.sets[i] : {};
+                const weightVal = (setData.weight || setData.weight === 0) && setData.weight !== '' ? setData.weight : '';
+                const repsVal = (setData.reps || setData.reps === 0) && setData.reps !== '' ? setData.reps : '';
+                const isCompleted = !!setData.completed;
+
+                let refSet = null;
+                if (lastSets) {
+                    refSet = lastSets[i] || lastSets[lastSets.length - 1];
+                }
+                const weightPlaceholder = refSet && refSet.weight ? `${refSet.weight}` : 'lb';
+                const repsPlaceholder = refSet && refSet.reps ? `${refSet.reps}` : `${exercise.reps}`;
+
+                const doneBtnClass = isCompleted
+                    ? 'bg-teal-500/20 border-teal-500 text-teal-400'
+                    : 'border-neutral-700 text-neutral-500 hover:border-neutral-500';
+
+                setsHTML += `
+                    <div class="log-set-row flex items-center gap-2" data-exercise-name="${safeName}" data-set-index="${i}">
+                        <span class="text-xs text-neutral-500 w-10 shrink-0">Set ${i + 1}</span>
+                        <input type="number" inputmode="decimal" step="any" min="0" placeholder="${weightPlaceholder}" value="${weightVal}" class="log-input log-weight bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white text-sm w-16 focus:outline-none focus:border-teal-500" data-field="weight" aria-label="Weight for set ${i + 1}">
+                        <span class="text-neutral-600 text-xs">lb ×</span>
+                        <input type="number" inputmode="numeric" min="0" placeholder="${repsPlaceholder}" value="${repsVal}" class="log-input log-reps bg-neutral-800 border border-neutral-700 rounded px-2 py-1 text-white text-sm w-12 focus:outline-none focus:border-teal-500" data-field="reps" aria-label="Reps for set ${i + 1}">
+                        <button type="button" class="set-done-btn ml-auto h-8 w-8 rounded border flex items-center justify-center transition-colors shrink-0 ${doneBtnClass}" aria-label="Mark set ${i + 1} done">${isCompleted ? checkSvg : ''}</button>
                     </div>
                 `;
             }
-            
+
             const titleId = `ex-title-day${dayIndex}-ex${exerciseIndex}${supersetIndex !== null ? `-ss${supersetIndex}` : ''}`;
             const focusId = `ex-focus-day${dayIndex}-ex${exerciseIndex}${supersetIndex !== null ? `-ss${supersetIndex}` : ''}`;
             const toggleAltId = `toggle-alt-day${dayIndex}-ex${exerciseIndex}${supersetIndex !== null ? `-ss${supersetIndex}` : ''}`;
 
             card.innerHTML = `
                 <div class="flex justify-between items-start">
-                    <div>
+                    <div class="flex-1 min-w-0">
                         <h3 id="${titleId}" class="text-lg sm:text-xl font-bold text-white">${exercise.name}</h3>
                         ${exercise.alternative ? `<button id="${toggleAltId}" data-original-name="${exercise.name}" data-alt-name="${exercise.alternative}" class="text-xs text-teal-400 hover:text-teal-300 font-medium mt-0.5 flex items-center gap-1">
                             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path></svg>
                             Alt: ${exercise.alternative}
                         </button>` : ''}
+                        <p class="text-xs font-bold text-neutral-500 uppercase tracking-wider mt-1 mono">Target: ${exercise.sets} &times; ${exercise.reps}</p>
                     </div>
                     ${exercise.focus ? `<button class="info-toggle text-neutral-500 hover:text-teal-400 transition-colors flex-shrink-0 ml-2" data-focus-id="${focusId}">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
@@ -880,19 +1025,15 @@
                 ${exercise.focus ? `<div id="${focusId}" class="mt-2 text-neutral-300 bg-neutral-800/50 p-3 rounded-lg text-xs hidden border border-neutral-700">
                     <span class="text-teal-400 font-semibold">Focus:</span> ${exercise.focus}
                 </div>` : ''}
-                <div class="mt-3 sm:mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
-                    <div class="text-center bg-neutral-800/70 p-2 rounded-lg min-w-[90px]">
-                        <p class="text-xs font-bold text-neutral-500 uppercase">Sets×Reps</p>
-                        <p class="mono text-base font-semibold text-white">${exercise.sets}×${exercise.reps}</p>
-                    </div>
-                    <div class="flex-grow flex items-center justify-center gap-2 sm:gap-3">
-                        ${setsCheckboxes}
-                    </div>
-                    ${!isSupersetChild && exercise.rest ? `
+                <div class="mt-3 sm:mt-4 space-y-2">
+                    ${setsHTML}
+                </div>
+                ${!isSupersetChild && exercise.rest ? `
+                <div class="mt-3 flex justify-end">
                     <button class="rest-timer-btn btn-primary text-white font-semibold py-2 px-4 rounded-lg text-sm" data-time="${exercise.rest}">
                         Rest ${exercise.rest}s
-                    </button>` : ''}
-                </div>
+                    </button>
+                </div>` : ''}
             `;
             return card;
         }
@@ -936,14 +1077,111 @@
             workoutDayDetailsEl.textContent = `${dayData.emphasis} (${dayData.estimatedDuration})`;
 
             dayData.exercises.forEach((item, index) => {
-                let card = item.type === 'superset' 
+                let card = item.type === 'superset'
                     ? createSupersetCard(item, index, dayIndex)
                     : createExerciseCard(item, index, dayIndex);
                 workoutContainer.appendChild(card);
             });
-            
+
+            // Populate and show the inline notes textarea bound to today's log.
+            const notesSection = document.getElementById('inline-notes-section');
+            const notesEl = document.getElementById('inline-session-notes');
+            if (notesSection && notesEl) {
+                const todayLog = appState.currentWorkoutId
+                    ? getTodaysLog(appState.currentWorkoutId, dayData.dayName)
+                    : null;
+                notesEl.value = todayLog ? (todayLog.notes || '') : '';
+                notesSection.classList.remove('hidden');
+            }
+
             updateActiveTab(dayIndex);
             attachEventListeners();
+        }
+
+        // Persists a single weight/reps input to today's log on blur.
+        function handleLogInputBlur(e) {
+            const input = e.target;
+            const row = input.closest('.log-set-row');
+            if (!row) return;
+            const dayData = multiDayWorkoutData[currentDayIndex];
+            if (!appState.currentWorkoutId || !dayData) return;
+
+            const exerciseName = row.dataset.exerciseName;
+            const setIdx = parseInt(row.dataset.setIndex, 10);
+            const field = input.dataset.field;
+            const exDef = findExerciseDef(dayData, exerciseName);
+            const targetSets = exDef ? exDef.sets : (setIdx + 1);
+
+            const log = getOrCreateTodaysLog(appState.currentWorkoutId, dayData.dayName, dayData.title);
+            const ex = getOrCreateLogExercise(log, exerciseName, targetSets);
+
+            const raw = input.value.trim();
+            if (raw === '') {
+                delete ex.sets[setIdx][field];
+            } else {
+                const num = parseFloat(raw);
+                if (!isNaN(num) && num >= 0) {
+                    ex.sets[setIdx][field] = num;
+                }
+            }
+
+            updateExerciseProgressForLog(log);
+            saveState();
+            updateStats();
+        }
+
+        // Toggles a set's completed flag, autofilling from last session if
+        // both inputs are empty when the user marks the set done.
+        function handleSetDoneClick(e) {
+            const btn = e.currentTarget;
+            const row = btn.closest('.log-set-row');
+            if (!row) return;
+            const dayData = multiDayWorkoutData[currentDayIndex];
+            if (!appState.currentWorkoutId || !dayData) return;
+
+            const exerciseName = row.dataset.exerciseName;
+            const setIdx = parseInt(row.dataset.setIndex, 10);
+            const exDef = findExerciseDef(dayData, exerciseName);
+            const targetSets = exDef ? exDef.sets : (setIdx + 1);
+
+            const log = getOrCreateTodaysLog(appState.currentWorkoutId, dayData.dayName, dayData.title);
+            const ex = getOrCreateLogExercise(log, exerciseName, targetSets);
+            const setData = ex.sets[setIdx];
+
+            const willBeCompleted = !setData.completed;
+            setData.completed = willBeCompleted;
+
+            // If marking complete with nothing entered yet, copy forward from
+            // the last session for this exercise.
+            const weightInput = row.querySelector('.log-weight');
+            const repsInput = row.querySelector('.log-reps');
+            if (willBeCompleted && !setData.weight && !setData.reps) {
+                const lastSets = getLastSessionForExercise(exerciseName, log.id);
+                if (lastSets) {
+                    const ref = lastSets[setIdx] || lastSets[lastSets.length - 1];
+                    if (ref) {
+                        if (ref.weight) {
+                            setData.weight = ref.weight;
+                            if (weightInput) weightInput.value = ref.weight;
+                        }
+                        if (ref.reps) {
+                            setData.reps = ref.reps;
+                            if (repsInput) repsInput.value = ref.reps;
+                        }
+                    }
+                }
+            }
+
+            const checkSvg = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>';
+            const baseClass = 'set-done-btn ml-auto h-8 w-8 rounded border flex items-center justify-center transition-colors shrink-0';
+            btn.className = willBeCompleted
+                ? `${baseClass} bg-teal-500/20 border-teal-500 text-teal-400`
+                : `${baseClass} border-neutral-700 text-neutral-500 hover:border-neutral-500`;
+            btn.innerHTML = willBeCompleted ? checkSvg : '';
+
+            updateExerciseProgressForLog(log);
+            saveState();
+            updateStats();
         }
 
         function attachEventListeners() {
@@ -973,12 +1211,13 @@
                     if (focusEl) focusEl.classList.toggle('hidden');
                 });
             });
-            
-            document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
-                checkbox.addEventListener('change', (e) => {
-                    const label = e.target.nextElementSibling;
-                    if (label) label.classList.toggle('strikethrough', e.target.checked);
-                });
+
+            document.querySelectorAll('.log-input').forEach(input => {
+                input.addEventListener('blur', handleLogInputBlur);
+            });
+
+            document.querySelectorAll('.set-done-btn').forEach(btn => {
+                btn.addEventListener('click', handleSetDoneClick);
             });
         }
 
@@ -1038,8 +1277,12 @@
 
         function updateStats() {
             weekNumberEl.textContent = (appState.currentWorkout && appState.currentWorkout.weekNumber) || appState.weekNumber;
-            loggedSessionsEl.textContent = appState.workoutLogs.length;
-            
+            // Only count logs that have at least one completed or weighted set.
+            // Inline logging creates an empty draft on first interaction; that
+            // shouldn't inflate the counter or the streak.
+            const realLogs = appState.workoutLogs.filter(isLoggedSession);
+            loggedSessionsEl.textContent = realLogs.length;
+
             const totalVol = appState.workoutLogs.reduce((sum, log) => {
                 return sum + (log.exercises || []).reduce((exSum, ex) => {
                     return exSum + (ex.sets || []).reduce((setSum, set) => {
@@ -1048,12 +1291,12 @@
                 }, 0);
             }, 0);
             totalVolumeEl.textContent = totalVol > 1000 ? `${(totalVol/1000).toFixed(1)}k` : totalVol;
-            
+
             // Calculate streak
             let streak = 0;
             const today = new Date();
             today.setHours(0, 0, 0, 0);
-            const sortedLogs = [...appState.workoutLogs].sort((a, b) => new Date(b.date) - new Date(a.date));
+            const sortedLogs = [...realLogs].sort((a, b) => new Date(b.date) - new Date(a.date));
             
             for (let i = 0; i < sortedLogs.length; i++) {
                 const logDate = new Date(sortedLogs[i].date);
@@ -1073,113 +1316,99 @@
         // ============================================
         // WORKOUT LOGGING
         // ============================================
-        function openLogModal() {
-            const dayData = multiDayWorkoutData[currentDayIndex];
+        // ID of the log currently being edited via the past-log modal. null
+        // when the modal is closed.
+        let editingLogId = null;
+
+        // Opens the log modal in edit mode for an existing log.
+        function openLogModalForEdit(logId) {
+            const log = appState.workoutLogs.find(l => l.id === logId);
+            if (!log) return;
+            editingLogId = logId;
+
+            const titleEl = logModal.querySelector('h2');
+            if (titleEl) titleEl.textContent = 'Edit Workout Log';
+            const saveBtn = document.getElementById('save-log-btn');
+            if (saveBtn) saveBtn.textContent = 'Save changes';
+
             const container = document.getElementById('log-exercises-container');
             container.innerHTML = '';
-            
-            const allExercises = [];
-            dayData.exercises.forEach((item, idx) => {
-                if (item.type === 'superset') {
-                    item.exercises.forEach((ex, subIdx) => {
-                        allExercises.push({ ...ex, id: `${idx}_${subIdx}` });
-                    });
-                } else {
-                    allExercises.push({ ...item, id: `${idx}` });
-                }
-            });
-            
-            allExercises.forEach(exercise => {
-                const exerciseLog = document.createElement('div');
-                exerciseLog.className = 'card card-static p-4';
-                
+
+            log.exercises.forEach(ex => {
+                const card = document.createElement('div');
+                card.className = 'card card-static p-4';
+                const safeName = ex.name.replace(/"/g, '&quot;');
+                const setCount = Math.max(ex.sets.length, 1);
                 let setsHTML = '';
-                for (let i = 0; i < exercise.sets; i++) {
+                for (let i = 0; i < setCount; i++) {
+                    const s = ex.sets[i] || {};
+                    const w = (s.weight || s.weight === 0) ? s.weight : '';
+                    const r = (s.reps || s.reps === 0) ? s.reps : '';
                     setsHTML += `
                         <div class="flex items-center gap-2 mb-2">
                             <span class="text-xs text-neutral-500 w-12">Set ${i + 1}</span>
-                            <input type="number" placeholder="Weight" class="weight-input" data-exercise="${exercise.id}" data-set="${i}" data-field="weight">
-                            <span class="text-neutral-600 text-xs">lbs ×</span>
-                            <input type="number" placeholder="Reps" class="weight-input w-16" data-exercise="${exercise.id}" data-set="${i}" data-field="reps">
+                            <input type="number" inputmode="decimal" step="any" min="0" placeholder="Weight" value="${w}" class="weight-input" data-exercise="${safeName}" data-set="${i}" data-field="weight">
+                            <span class="text-neutral-600 text-xs">lbs &times;</span>
+                            <input type="number" inputmode="numeric" min="0" placeholder="Reps" value="${r}" class="weight-input w-16" data-exercise="${safeName}" data-set="${i}" data-field="reps">
                         </div>
                     `;
                 }
-                
-                exerciseLog.innerHTML = `
-                    <h4 class="font-semibold text-white mb-3">${exercise.name}</h4>
-                    <p class="text-xs text-neutral-500 mb-3">Target: ${exercise.sets} × ${exercise.reps}</p>
+                card.innerHTML = `
+                    <h4 class="font-semibold text-white mb-3">${ex.name}</h4>
                     ${setsHTML}
                 `;
-                container.appendChild(exerciseLog);
+                container.appendChild(card);
             });
-            
+
+            document.getElementById('session-notes').value = log.notes || '';
             logModal.classList.remove('hidden');
             document.body.style.overflow = 'hidden';
         }
 
         function saveWorkoutLog() {
-            const dayData = multiDayWorkoutData[currentDayIndex];
-            const inputs = logModal.querySelectorAll('input[data-exercise]');
-            const exerciseData = {};
-            
-            inputs.forEach(input => {
-                const exId = input.dataset.exercise;
-                const setIdx = parseInt(input.dataset.set);
+            if (!editingLogId) {
+                closeLogModal();
+                return;
+            }
+            const log = appState.workoutLogs.find(l => l.id === editingLogId);
+            if (!log) {
+                closeLogModal();
+                return;
+            }
+
+            // Read all inputs grouped by exercise name.
+            const byExercise = {};
+            logModal.querySelectorAll('input[data-exercise]').forEach(input => {
+                const name = input.dataset.exercise;
+                const setIdx = parseInt(input.dataset.set, 10);
                 const field = input.dataset.field;
-                
-                if (!exerciseData[exId]) exerciseData[exId] = { sets: [] };
-                if (!exerciseData[exId].sets[setIdx]) exerciseData[exId].sets[setIdx] = {};
-                exerciseData[exId].sets[setIdx][field] = parseFloat(input.value) || 0;
-            });
-            
-            const allExercises = [];
-            dayData.exercises.forEach((item, idx) => {
-                if (item.type === 'superset') {
-                    item.exercises.forEach((ex, subIdx) => {
-                        const id = `${idx}_${subIdx}`;
-                        allExercises.push({
-                            name: ex.name,
-                            sets: exerciseData[id]?.sets || []
-                        });
-                    });
-                } else {
-                    const id = `${idx}`;
-                    allExercises.push({
-                        name: item.name,
-                        sets: exerciseData[id]?.sets || []
-                    });
+                if (!byExercise[name]) byExercise[name] = [];
+                if (!byExercise[name][setIdx]) byExercise[name][setIdx] = {};
+                const raw = input.value.trim();
+                if (raw !== '') {
+                    const num = parseFloat(raw);
+                    if (!isNaN(num) && num >= 0) {
+                        byExercise[name][setIdx][field] = num;
+                    }
                 }
             });
-            
-            const log = {
-                id: generateId(),
-                workoutId: appState.currentWorkoutId,
-                workoutName: appState.savedWorkouts.find(w => w.id === appState.currentWorkoutId)?.name || 'Unknown',
-                day: dayData.dayName,
-                dayTitle: dayData.title,
-                date: new Date().toISOString(),
-                exercises: allExercises,
-                notes: document.getElementById('session-notes').value
-            };
-            
-            appState.workoutLogs.push(log);
-            
-            // Update exercise progress tracking
-            allExercises.forEach(ex => {
-                if (!appState.exerciseProgress[ex.name]) {
-                    appState.exerciseProgress[ex.name] = [];
-                }
-                const maxWeight = Math.max(...ex.sets.map(s => s.weight || 0));
-                const maxReps = Math.max(...ex.sets.map(s => s.reps || 0));
-                if (maxWeight > 0) {
-                    appState.exerciseProgress[ex.name].push({
-                        date: log.date,
-                        weight: maxWeight,
-                        reps: maxReps
-                    });
-                }
+
+            log.exercises.forEach(ex => {
+                const newSets = byExercise[ex.name];
+                if (!newSets) return;
+                // Preserve existing completed flags by set index; mark a set
+                // as completed if it now has weight > 0.
+                const merged = newSets.map((s, idx) => {
+                    const prior = ex.sets[idx] || {};
+                    const next = { ...prior, ...(s || {}) };
+                    if ((next.weight || 0) > 0) next.completed = true;
+                    return next;
+                });
+                ex.sets = merged;
             });
-            
+            log.notes = document.getElementById('session-notes').value;
+
+            updateExerciseProgressForLog(log);
             saveState();
             updateStats();
             closeLogModal();
@@ -1188,6 +1417,7 @@
         function closeLogModal() {
             logModal.classList.add('hidden');
             document.body.style.overflow = 'auto';
+            editingLogId = null;
             document.getElementById('session-notes').value = '';
         }
 
@@ -1196,8 +1426,9 @@
         // ============================================
         function openProgressModal() {
             const container = document.getElementById('progress-content');
-            
-            if (appState.workoutLogs.length === 0) {
+            const realLogs = appState.workoutLogs.filter(isLoggedSession);
+
+            if (realLogs.length === 0) {
                 container.innerHTML = `
                     <div class="text-center py-10">
                         <svg class="w-16 h-16 mx-auto text-neutral-700 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1223,22 +1454,27 @@
                 });
                 prsHTML += '</div></div>';
                 
-                // Recent logs
+                // Recent logs — only real sessions, newest first.
                 let logsHTML = '<div><h3 class="text-lg font-bold text-white mb-3">Recent Sessions</h3><div class="space-y-3">';
-                const recentLogs = [...appState.workoutLogs].reverse().slice(0, 10);
+                const recentLogs = [...realLogs].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10);
                 recentLogs.forEach(log => {
                     const totalVol = log.exercises.reduce((sum, ex) => {
                         return sum + ex.sets.reduce((setSum, set) => setSum + ((set.weight || 0) * (set.reps || 0)), 0);
                     }, 0);
-                    
+
                     logsHTML += `
                         <div class="bg-neutral-800 rounded-lg p-4">
                             <div class="flex justify-between items-start mb-2">
-                                <div>
-                                    <p class="font-semibold text-white">${log.day}: ${log.dayTitle}</p>
-                                    <p class="text-xs text-neutral-500">${log.workoutName}</p>
+                                <div class="flex-1 min-w-0">
+                                    <p class="font-semibold text-white truncate">${log.day}: ${log.dayTitle}</p>
+                                    <p class="text-xs text-neutral-500 truncate">${log.workoutName}</p>
                                 </div>
-                                <span class="text-xs text-neutral-500">${new Date(log.date).toLocaleDateString()}</span>
+                                <div class="flex items-center gap-2 shrink-0 ml-2">
+                                    <span class="text-xs text-neutral-500">${new Date(log.date).toLocaleDateString()}</span>
+                                    <button type="button" class="edit-log-btn text-neutral-500 hover:text-teal-400 transition-colors p-1" data-log-id="${log.id}" title="Edit" aria-label="Edit this log">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                    </button>
+                                </div>
                             </div>
                             <div class="flex gap-4 text-sm">
                                 <span class="text-neutral-400">Exercises: <span class="text-white">${log.exercises.length}</span></span>
@@ -1249,10 +1485,19 @@
                     `;
                 });
                 logsHTML += '</div></div>';
-                
+
                 container.innerHTML = prsHTML + logsHTML;
+
+                // Wire pencil buttons to open the past-log editor.
+                container.querySelectorAll('.edit-log-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        progressModal.classList.add('hidden');
+                        document.body.style.overflow = 'auto';
+                        openLogModalForEdit(btn.dataset.logId);
+                    });
+                });
             }
-            
+
             progressModal.classList.remove('hidden');
             document.body.style.overflow = 'hidden';
         }
@@ -1493,6 +1738,8 @@
             document.getElementById('workout-day-details').textContent = '';
             dayNavigationContainer.innerHTML = '';
             progressionNotesSection.classList.add('hidden');
+            const inlineNotes = document.getElementById('inline-notes-section');
+            if (inlineNotes) inlineNotes.classList.add('hidden');
             workoutContainer.innerHTML =
                 '<div class="card card-static p-8 text-center">' +
                     '<h3 class="text-lg font-bold text-white mb-2">Ready to start</h3>' +
@@ -1523,7 +1770,6 @@
         document.getElementById('generate-with-settings').addEventListener('click', handleGenerate);
         document.getElementById('reset-data-btn').addEventListener('click', resetAllData);
 
-        document.getElementById('log-workout-btn').addEventListener('click', openLogModal);
         document.getElementById('close-log-btn').addEventListener('click', closeLogModal);
         document.getElementById('cancel-log-btn').addEventListener('click', closeLogModal);
         document.getElementById('save-log-btn').addEventListener('click', saveWorkoutLog);
@@ -1538,6 +1784,15 @@
         document.getElementById('close-saved-btn').addEventListener('click', () => {
             savedModal.classList.add('hidden');
             document.body.style.overflow = 'auto';
+        });
+
+        // Inline notes textarea — autosaves to today's log on blur.
+        document.getElementById('inline-session-notes').addEventListener('blur', () => {
+            const dayData = multiDayWorkoutData[currentDayIndex];
+            if (!appState.currentWorkoutId || !dayData) return;
+            const log = getOrCreateTodaysLog(appState.currentWorkoutId, dayData.dayName, dayData.title);
+            log.notes = document.getElementById('inline-session-notes').value;
+            saveState();
         });
 
         // ============================================
