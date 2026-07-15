@@ -29,11 +29,29 @@ Use these principles, in order of priority:
    from \`exerciseDatabase\`, (b) change the rep range bracket (e.g. 8-12 -> 5-8 or 12-15),
    (c) introduce an intensity technique (drop set, rest-pause, tempo) on the final set.
    Pick the response that best fits where the lifter is in the mesocycle (see #3).
-2. Stimulus variety to prevent staleness. Across a 4-week mesocycle the lifter should not
-   see the exact same exercise selection twice in the same slot. Use \`recentLogs\` to see
-   what has been used recently and rotate within the same movement pattern (e.g. flat
-   barbell bench -> incline dumbbell press; barbell row -> chest-supported dumbbell row).
-   Stay within the provided \`exerciseDatabase\` — do not invent exercises.
+2. Stimulus variety to prevent staleness — THIS IS A HARD REQUIREMENT, not a preference.
+   The \`previousWorkouts\` array is the authoritative record of what you PRESCRIBED in
+   recent weeks (ordered oldest -> newest by \`weekNumber\`; each day lists its exercises
+   in slot order). Use it as your PRIMARY look-back signal: it is reliable even when the
+   lifter logged little or no volume, because it reflects the prescription itself, not
+   their logging. Apply these rules:
+   - For every slot, the exercise you choose MUST differ from the exercise in the same
+     slot of the most recent previous week (the last entry in \`previousWorkouts\`).
+   - Do not reuse the same exercise in the same movement-pattern slot more than once
+     across the weeks present in \`previousWorkouts\`, UNLESS the \`exerciseDatabase\` offers
+     no other valid option for that slot under the current \`equipmentPref\` (some slots,
+     e.g. quad isolation, may have only one entry — in that case repetition is allowed).
+   - Rotate within the same movement pattern (e.g. flat barbell bench -> incline dumbbell
+     press; barbell row -> chest-supported dumbbell row).
+   - \`recentLogs\` and \`exerciseProgress\` remain SECONDARY signals for HOW the lifter
+     performed; \`previousWorkouts\` is the source of truth for WHAT was prescribed.
+   If \`previousWorkouts\` is empty (first week), select freely.
+   Each exercise in \`exerciseDatabase\` carries \`movementPattern\` (e.g. horizontalPush,
+   verticalPull, hipHinge, lateralRaise), \`primaryMuscle\`, \`secondaryMuscles\`,
+   \`unilateral\`, and \`equipment\`. Use \`movementPattern\` to identify valid same-pattern
+   rotations within a slot, and \`primaryMuscle\` to track weekly volume per muscle. The
+   \`exerciseDatabase\` you receive is ALREADY filtered to the lifter's equipment preference,
+   so every exercise in it is fair game. Stay within it — do not invent exercises.
 3. Periodization. Treat \`weekNumber % 4\` as the position in a 4-week mesocycle:
    - Week 1: moderate volume, RIR 2-3, introduce the block's exercises.
    - Week 2: add a set to two priority muscle groups, RIR 1-2.
@@ -76,15 +94,126 @@ Output rules:
       },
       ... exactly 4 days ...
     ],
-    "progressionNotes": string — a 2-4 sentence coach's note that explicitly references what
-      the lifter did the prior week and why this week's prescription follows from it. Call
-      out any plateau-busting changes by name (e.g. "Swapped flat bench for incline DB press
-      because flat bench reps stalled at 185x8 for two weeks").
+    "progressionNotes": string — a 2-4 sentence coach's note that explicitly references the
+      prior week and why this week's prescription follows from it. If the lifter logged
+      volume, reference what they did; if they logged little or nothing, reference the prior
+      week's PRESCRIBED selection from \`previousWorkouts\` instead (e.g. "Last week prescribed
+      flat barbell bench in the Push primary slot, so this week rotates to incline dumbbell
+      press to vary the stimulus"). Call out any plateau-busting or rotation changes by name.
   }
 - Days must be Monday/Tuesday/Thursday/Friday in that order. Titles: Upper Body, Lower Body,
   Push Day, Pull Day. Use the same titles for consistency with the renderer.
 - Generate the \`id\` as a short random string (timestamp+random is fine). \`createdAt\` is now.
 - Reflect \`weekNumber\` from the request unchanged.`;
+
+// ─── Variety enforcement ───────────────────────────────────────────────────────
+// The system prompt asks the model to rotate exercises, but prompts drift.
+// This programmatically verifies the generated week against `previousWorkouts`
+// from the request body, so variety is guaranteed rather than requested.
+
+/** Flattens a generated day's exercises (regular + superset) to names in slot order. */
+export function flattenGeneratedDay(day) {
+  const names = [];
+  for (const item of day?.exercises ?? []) {
+    if (item && item.type === 'superset') {
+      for (const sub of item.exercises ?? []) {
+        if (sub && typeof sub.name === 'string') names.push(sub.name);
+      }
+    } else if (item && typeof item.name === 'string') {
+      names.push(item.name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Checks the candidate workout against the prescription history in the request.
+ * Rules mirror system-prompt principle #2:
+ *  - an exercise must not occupy the same day+slot it had last week, and
+ *  - an exercise should not reappear anywhere within the look-back window,
+ * in both cases ONLY when the (already equipment-filtered) exerciseDatabase
+ * offers enough same-movement-pattern alternatives to avoid the repeat.
+ * Returns null when there is nothing to check.
+ */
+export function checkVariety(candidate, requestBody) {
+  const prevRaw = requestBody?.previousWorkouts;
+  if (!Array.isArray(prevRaw) || prevRaw.length === 0) return null;
+  if (!Array.isArray(candidate?.workout)) return null;
+
+  // name -> movementPattern, and pattern -> option count, from the filtered DB.
+  const patternOf = new Map();
+  const patternCount = new Map();
+  for (const group of Object.values(requestBody?.exerciseDatabase ?? {})) {
+    for (const arr of Object.values(group ?? {})) {
+      if (!Array.isArray(arr)) continue;
+      for (const ex of arr) {
+        if (typeof ex?.name !== 'string' || typeof ex?.movementPattern !== 'string') continue;
+        patternOf.set(ex.name, ex.movementPattern);
+        patternCount.set(ex.movementPattern, (patternCount.get(ex.movementPattern) ?? 0) + 1);
+      }
+    }
+  }
+  const alternativesFor = (name) => {
+    const p = patternOf.get(name);
+    return p ? (patternCount.get(p) ?? 1) : 1;
+  };
+
+  const prev = [...prevRaw].sort((a, b) => (a.weekNumber ?? 0) - (b.weekNumber ?? 0));
+  const lastWeek = prev[prev.length - 1];
+  const lastWeekDays = lastWeek.days ?? [];
+  const lastWeekNames = new Set(lastWeekDays.flatMap((d) => d.exercises ?? []));
+  // Which previous weeks used a given exercise (for window-reuse reporting).
+  const weeksUsing = (name) =>
+    prev
+      .filter((pw) => (pw.days ?? []).some((d) => (d.exercises ?? []).includes(name)))
+      .map((pw) => pw.weekNumber ?? 0);
+
+  const violations = [];
+  const flagged = new Set();
+  let slotRepeats = 0;
+  let lastWeekOverlap = 0;
+  let totalSlots = 0;
+
+  const days = candidate.workout;
+  for (let i = 0; i < days.length; i++) {
+    const names = flattenGeneratedDay(days[i]);
+    const prevDay = lastWeekDays.find((d) => d.dayName === days[i].dayName) ?? lastWeekDays[i];
+    const prevNames = prevDay?.exercises ?? [];
+
+    for (let j = 0; j < names.length; j++) {
+      totalSlots++;
+      const name = names[j];
+      if (lastWeekNames.has(name)) lastWeekOverlap++;
+
+      const alts = alternativesFor(name);
+      const pattern = patternOf.get(name) ?? 'unknown pattern';
+
+      // Rule A: same exercise in the same day+slot as the most recent week.
+      if (prevNames[j] === name && alts >= 2 && !flagged.has(name)) {
+        slotRepeats++;
+        flagged.add(name);
+        violations.push(
+          `"${name}" (${days[i].dayName}, slot ${j + 1}) repeats last week's prescription in the same slot — ` +
+          `replace it with a different ${pattern} exercise from exerciseDatabase.`,
+        );
+        continue;
+      }
+
+      // Rule B: reused anywhere within the look-back window while the pattern
+      // pool is large enough that no repeat was necessary.
+      const used = weeksUsing(name);
+      if (used.length > 0 && alts > prev.length && !flagged.has(name)) {
+        flagged.add(name);
+        violations.push(
+          `"${name}" (${days[i].dayName}) was already prescribed in week${used.length > 1 ? 's' : ''} ` +
+          `${used.join(', ')} of the look-back window — rotate to another ${pattern} option.`,
+        );
+      }
+    }
+  }
+
+  return { violations: violations.slice(0, 10), slotRepeats, lastWeekOverlap, totalSlots };
+}
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
@@ -153,7 +282,7 @@ async function callClaude(payload, retry) {
     messages.push({
       role: 'user',
       content:
-        `Your previous response failed schema validation with this error: ${retry.validationError}\n\n` +
+        `Your previous response failed validation:\n${retry.validationError}\n\n` +
         `Please return ONLY a valid JSON object that exactly matches the schema in the system prompt. ` +
         `No code fences, no prose, no commentary.`,
     });
@@ -204,7 +333,54 @@ app.post('/generate-workout', async (req, res) => {
   }
 
   const firstError = validateWorkout(first.json);
-  if (!firstError) return res.json(first.json);
+
+  if (!firstError) {
+    // Schema is fine — now enforce exercise variety programmatically.
+    const variety = checkVariety(first.json, body);
+    if (variety) {
+      console.log(
+        `[variety] first attempt: ${variety.lastWeekOverlap}/${variety.totalSlots} exercises ` +
+        `overlap last week, ${variety.slotRepeats} exact slot repeats, ` +
+        `${variety.violations.length} violations`,
+      );
+    }
+    if (!variety || variety.violations.length === 0) return res.json(first.json);
+
+    // ── Variety retry: regenerate with the specific repeats called out ────────
+    const feedback =
+      `The workout violates the stimulus-variety rules (principle #2, a HARD requirement):\n` +
+      variety.violations.map((v) => `- ${v}`).join('\n') +
+      `\nRegenerate the week keeping the schema, periodization, and volume intact, ` +
+      `replacing ONLY the flagged exercises with different same-movement-pattern ` +
+      `options from exerciseDatabase that do not appear in previousWorkouts.`;
+
+    let varietyRetry;
+    try {
+      varietyRetry = await callClaude(body, { priorText: first.rawText, validationError: feedback });
+    } catch (e) {
+      // The first result was schema-valid; better stale variety than an error.
+      console.error('[server] Variety retry call failed, returning first attempt:', e?.message ?? e);
+      return res.json(first.json);
+    }
+
+    const retrySchemaError = validateWorkout(varietyRetry.json);
+    if (retrySchemaError) {
+      console.error('[server] Variety retry failed schema, returning first attempt:', retrySchemaError);
+      return res.json(first.json);
+    }
+
+    const retryVariety = checkVariety(varietyRetry.json, body);
+    console.log(
+      `[variety] retry: ${retryVariety?.lastWeekOverlap ?? 0}/${retryVariety?.totalSlots ?? 0} overlap last week, ` +
+      `${retryVariety?.violations.length ?? 0} violations remain` +
+      (retryVariety && retryVariety.violations.length > 0
+        ? ` — accepting anyway: ${retryVariety.violations.join(' | ')}`
+        : ''),
+    );
+    return res.json(varietyRetry.json);
+  }
+
+  console.error('[server] First attempt problem:', firstError);
 
   let retry;
   try {
@@ -218,6 +394,14 @@ app.post('/generate-workout', async (req, res) => {
     return res.status(502).json({ error: 'Coach returned an invalid workout plan. Please try again.' });
   }
 
+  const retryVariety = checkVariety(retry.json, body);
+  if (retryVariety) {
+    console.log(
+      `[variety] schema-retry result: ${retryVariety.lastWeekOverlap}/${retryVariety.totalSlots} overlap last week, ` +
+      `${retryVariety.violations.length} violations` +
+      (retryVariety.violations.length > 0 ? ' — accepting (retry budget spent)' : ''),
+    );
+  }
   res.json(retry.json);
 });
 
