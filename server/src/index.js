@@ -71,6 +71,16 @@ Use these principles, in order of priority:
    to that lift, not generic. Reuse the cue from \`exerciseDatabase\` if it is good; refine
    it if the lifter's recent logs suggest a specific issue (e.g. reps dropping sharply set
    to set -> add a pacing cue).
+7. Core & abs — REQUIRED. \`exerciseDatabase\` includes a \`core\` category (\`core.exercises\`)
+   of direct abdominal and oblique work, each tagged with a \`movementPattern\` of coreFlexion,
+   coreRotation, coreAntiExtension, or coreStability. End EVERY one of the 4 days with exactly
+   one core exercise as a short finisher, appended as the LAST entry in that day's \`exercises\`
+   array (a normal exercise object, not a superset). Prescribe holds and loaded carries
+   (coreAntiExtension, coreStability) for time — 3 sets, \`reps\` of "30-45 sec"; prescribe
+   everything else for reps — 3 sets, \`reps\` of "12-20". Rotate the core pick using the same
+   variety rules as principle 2: it MUST differ from that day's core finisher in the most
+   recent previous week, and vary the \`movementPattern\` across the four days and across the
+   look-back window. Keep it brief so the session still respects \`settings.maxDuration\`.
 
 Output rules:
 - Return ONLY a JSON object. No prose, no code fences, no commentary.
