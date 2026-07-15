@@ -308,10 +308,34 @@ async function callClaude(
   payload: unknown,
   retry?: { priorText: string; validationError: string },
 ): Promise<ClaudeResult> {
-  const userMessage = `Design a training week for this lifter. Return ONLY a valid JSON object — no prose, no code fences.\n\n${JSON.stringify(payload)}`;
+  // Split the payload so the large, stable exerciseDatabase leads its own content
+  // block and the volatile per-request lifter data follows. The cache_control
+  // breakpoint caches the system prompt + DB prefix (byte-identical for a given
+  // equipmentPref), so repeat generations — and the variety retries below, which
+  // append turns *after* this block — reuse it instead of re-billing full input.
+  const body = (payload ?? {}) as Record<string, unknown>;
+  const { exerciseDatabase, ...lifter } = body;
 
-  const messages: Array<{ role: string; content: string }> = [
-    { role: 'user', content: userMessage },
+  type Block = { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } };
+  const firstUser: Block[] = [
+    {
+      type: 'text',
+      text:
+        `Design a training week for this lifter. Return ONLY a valid JSON object — no prose, no code fences.\n\n` +
+        `exerciseDatabase (already filtered to the lifter's equipment preference):\n` +
+        JSON.stringify(exerciseDatabase ?? {}),
+      cache_control: { type: 'ephemeral' },
+    },
+    {
+      type: 'text',
+      text:
+        `Lifter request data (previousWorkouts, recentLogs, exerciseProgress, settings, weekNumber):\n` +
+        JSON.stringify(lifter),
+    },
+  ];
+
+  const messages: Array<{ role: string; content: string | Block[] }> = [
+    { role: 'user', content: firstUser },
   ];
 
   if (retry) {
