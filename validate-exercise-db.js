@@ -10,11 +10,13 @@ const PATTERNS = new Set([
   'horizontalPull', 'verticalPull', 'squat', 'hipHinge', 'lunge',
   'chestFly', 'lateralRaise', 'frontRaise', 'rearDelt', 'shrug',
   'latIsolation', 'bicepCurl', 'tricepExtension', 'quadIsolation',
-  'hamstringCurl', 'calfRaise'
+  'hamstringCurl', 'calfRaise',
+  'coreFlexion', 'coreRotation', 'coreAntiExtension', 'coreStability'
 ]);
 const MUSCLES = new Set([
   'chest', 'lats', 'upper-back', 'rear-delts', 'front-delts', 'side-delts',
-  'biceps', 'triceps', 'forearms', 'quads', 'hamstrings', 'glutes', 'calves'
+  'biceps', 'triceps', 'forearms', 'quads', 'hamstrings', 'glutes', 'calves',
+  'abs', 'obliques'
 ]);
 
 // The original 55 names that MUST still be present (back-compat).
